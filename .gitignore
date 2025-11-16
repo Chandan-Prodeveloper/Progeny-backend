@@ -1,0 +1,23 @@
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Environment files (never push)
+.env
+*.env
+.env.*
+
+# Logs
+*.log
+
+# IGNORE ML MODEL FILES (GitHub can't store them)
+models/*.h5
+*.h5
