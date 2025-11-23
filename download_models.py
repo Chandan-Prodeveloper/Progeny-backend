@@ -9,10 +9,10 @@ from pathlib import Path
 #                                 This is your FILE_ID
 
 MODEL_CONFIGS = {
-    'apple_model.h5': 'YOUR_APPLE_MODEL_FILE_ID_HERE',
-    'corn_model.h5': 'YOUR_CORN_MODEL_FILE_ID_HERE',
-    'potato_model.h5': 'YOUR_POTATO_MODEL_FILE_ID_HERE',
-    'tomato_model.h5': 'YOUR_TOMATO_MODEL_FILE_ID_HERE',
+   'apple_model.h5': '1njY0_1O1LkU_3RIJd-99HSSD_dpTv-g2',
+    'corn_model.h5': '1iNLjeWiMCqjsbhVgETqbdR6-CCL4CGlP',
+    'potato_model.h5': '1bnQoecm3U516e7iyZ9yQqzZdn4S7Jp9T',
+    'tomato_model.h5': '1hMXKLJm_gis4oJpDrYiAPk7RaBXKtbhb',
 }
 
 def download_from_google_drive(file_id, destination):
@@ -106,4 +106,5 @@ if __name__ == '__main__':
         download_all_models()
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
+
         exit(1)
