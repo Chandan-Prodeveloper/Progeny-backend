@@ -4,10 +4,10 @@ import warnings
 import sys
 
 # Suppress TensorFlow CPU and oneDNN warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=info, 2=warning, 3=error
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN custom operations
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# Suppress absl warnings about compiled metrics
+# Suppress absl warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='absl')
 
 # Download models from Google Drive before starting the app
@@ -18,17 +18,12 @@ print("="*70 + "\n")
 try:
     from download_models import download_all_models
     download_all_models()
-    print("✅ Model initialization complete. Starting Flask application...\n")
+    print("✅ Model files downloaded. Will load on demand to save memory...\n")
 except Exception as e:
     print(f"\n{'='*70}")
-    print(f"❌ CRITICAL ERROR: Failed to initialize models")
+    print(f"❌ CRITICAL ERROR: Failed to download models")
     print(f"{'='*70}")
     print(f"\n{e}\n")
-    print("Please check:")
-    print("1. download_models.py has correct Google Drive File IDs")
-    print("2. Models are shared publicly on Google Drive")
-    print("3. gdown package is installed (check requirements.txt)")
-    print(f"\n{'='*70}\n")
     sys.exit(1)
 
 # Now import other libraries
@@ -38,6 +33,7 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 import io
+import gc
 
 app = Flask(__name__)
 CORS(app)
@@ -46,10 +42,11 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 
-print(f"📁 Models directory: {MODELS_DIR}\n")
+print(f"📁 Models directory: {MODELS_DIR}")
+print(f"💾 Memory optimization: Models will be loaded on-demand\n")
 
-# Load models at startup with class mappings
-MODELS = {}
+# Model cache - stores only the currently loaded model
+CURRENT_MODEL = {'crop': None, 'model': None, 'classes': None}
 crop_types = ['apple', 'corn', 'potato', 'tomato']
 
 CLASS_MAPPINGS = {
@@ -59,34 +56,56 @@ CLASS_MAPPINGS = {
     'tomato': ['Bacterial Spot', 'Early Blight', 'Late Blight', 'Leaf Mold', 'Target Spot', 'Healthy']
 }
 
-print("🔄 Loading TensorFlow models into memory...\n")
-
-for crop in crop_types:
+def load_model_on_demand(crop_type):
+    """Load model only when needed and unload previous model"""
+    global CURRENT_MODEL
+    
+    # If this model is already loaded, return it
+    if CURRENT_MODEL['crop'] == crop_type and CURRENT_MODEL['model'] is not None:
+        print(f"✓ Using cached {crop_type} model")
+        return CURRENT_MODEL['model'], CURRENT_MODEL['classes']
+    
+    # Unload previous model to free memory
+    if CURRENT_MODEL['model'] is not None:
+        print(f"🗑️  Unloading {CURRENT_MODEL['crop']} model to free memory...")
+        del CURRENT_MODEL['model']
+        CURRENT_MODEL['model'] = None
+        CURRENT_MODEL['crop'] = None
+        CURRENT_MODEL['classes'] = None
+        
+        # Force garbage collection
+        gc.collect()
+        tf.keras.backend.clear_session()
+    
+    # Load new model
     try:
-        model_path = os.path.join(MODELS_DIR, f'{crop}_model.h5')
+        model_path = os.path.join(MODELS_DIR, f'{crop_type}_model.h5')
         
         if not os.path.exists(model_path):
-            print(f'❌ Model file not found: {model_path}')
-            continue
+            raise Exception(f"Model file not found: {model_path}")
         
-        MODELS[crop] = {
-            'model': tf.keras.models.load_model(model_path),
-            'classes': CLASS_MAPPINGS[crop]
-        }
+        print(f"📥 Loading {crop_type} model into memory...")
+        model = tf.keras.models.load_model(model_path)
+        classes = CLASS_MAPPINGS[crop_type]
         
-        file_size = os.path.getsize(model_path) / (1024 * 1024)  # MB
-        print(f'✅ Loaded {crop.capitalize()} model ({len(CLASS_MAPPINGS[crop])} classes, {file_size:.1f} MB)')
+        # Cache the loaded model
+        CURRENT_MODEL['crop'] = crop_type
+        CURRENT_MODEL['model'] = model
+        CURRENT_MODEL['classes'] = classes
+        
+        file_size = os.path.getsize(model_path) / (1024 * 1024)
+        print(f"✅ Loaded {crop_type} model ({file_size:.1f} MB, {len(classes)} classes)")
+        
+        return model, classes
         
     except Exception as e:
-        print(f'❌ Error loading {crop} model: {e}')
+        print(f"❌ Error loading {crop_type} model: {e}")
+        raise
 
 print(f"\n{'='*70}")
-print(f"🚀 Application Ready! {len(MODELS)}/{len(crop_types)} models loaded")
+print(f"🚀 Application Ready! Memory-optimized mode enabled")
+print(f"   Available crops: {', '.join(crop_types)}")
 print(f"{'='*70}\n")
-
-if len(MODELS) == 0:
-    print("❌ WARNING: No models loaded! Application will not work correctly.")
-    print("Please check if models were downloaded successfully.\n")
 
 # Disease remedies
 DISEASE_REMEDIES = {
@@ -168,14 +187,10 @@ def read_file_as_image(data) -> np.ndarray:
     try:
         image = Image.open(io.BytesIO(data))
         
-        # Convert to RGB if necessary
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Resize to model input size
         image = image.resize((256, 256))
-        
-        # Convert to numpy array
         image_array = np.array(image)
         
         return image_array
@@ -189,6 +204,7 @@ def home():
     return jsonify({
         'message': 'Progeny Backend API - Plant Disease Detection',
         'status': 'running',
+        'memory_mode': 'optimized (on-demand loading)',
         'endpoints': {
             'health': '/health',
             'predict': '/predict (POST)'
@@ -198,23 +214,22 @@ def home():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
+    current = CURRENT_MODEL['crop'] if CURRENT_MODEL['crop'] else 'None'
     return jsonify({
-        'status': 'healthy', 
-        'models_loaded': list(MODELS.keys()),
-        'total_models': len(MODELS),
-        'models_directory': MODELS_DIR,
-        'available_crops': crop_types
+        'status': 'healthy',
+        'memory_mode': 'optimized',
+        'currently_loaded_model': current,
+        'available_crops': crop_types,
+        'models_directory': MODELS_DIR
     })
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Prediction endpoint"""
+    """Prediction endpoint with on-demand model loading"""
     try:
-        # Validate image file
         if 'image' not in request.files:
             return jsonify({'error': 'No image provided'}), 400
         
-        # Validate crop type
         crop_type = request.form.get('crop_type')
         
         print(f"\n{'='*60}")
@@ -225,16 +240,14 @@ def predict():
         if not crop_type:
             return jsonify({'error': 'crop_type parameter is required'}), 400
         
-        if crop_type not in MODELS:
+        if crop_type not in crop_types:
             return jsonify({
                 'error': f'Invalid crop type: {crop_type}',
-                'available_crops': list(MODELS.keys())
+                'available_crops': crop_types
             }), 400
         
-        # Get model and class names
-        model_info = MODELS[crop_type]
-        model = model_info['model']
-        class_names = model_info['classes']
+        # Load model on demand
+        model, class_names = load_model_on_demand(crop_type)
         
         # Read and preprocess image
         image_file = request.files['image']
@@ -303,14 +316,6 @@ def predict():
         }), 500
 
 if __name__ == '__main__':
-    # Get port from environment variable (for Render deployment)
     port = int(os.environ.get('PORT', 5000))
-    
-    # Check if models are loaded
-    if len(MODELS) == 0:
-        print("\n⚠️  WARNING: Starting server with no models loaded!")
-        print("The API will not function correctly.\n")
-    
-    # Run the app
     print(f"🚀 Starting server on port {port}...\n")
     app.run(host='0.0.0.0', port=port, debug=False)
